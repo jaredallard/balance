@@ -87,6 +87,10 @@ func (h *Handlers) HandleAdd(msg *social.Message, tokens []string) (string, erro
 		}
 	}
 
+	if err := h.a.CreateTransaction(msg.From, users, due); err != nil {
+		log.Errorf("failed to create transaction log: %v", err)
+	}
+
 	return "Balance Created", nil
 }
 

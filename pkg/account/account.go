@@ -34,7 +34,10 @@ type Account struct {
 	// Balance is the current balance of this account
 	Balance float64 `json:"balance" pg:"default:0"`
 
+	// CreatedAt is when this account was created
 	CreatedAt time.Time `json:"created_at" pg:"default:now(),notnull"`
+
+	// UpdatedAt is when this account was last updated (any fields modified update this)
 	UpdatedAt time.Time `json:"updated_at" pg:"default:now(),notnull"`
 }
 
