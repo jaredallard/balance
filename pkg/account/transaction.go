@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/gofrs/uuid"
+	log "github.com/sirupsen/logrus"
 )
 
 // Transaction is a user transaction
@@ -15,8 +16,9 @@ type Transaction struct {
 	// CreatedBy is the user who created this transaction
 	CreatedBy uuid.UUID `pg:"created_by,type:uuid" json:"created_by"`
 
-	// Involved are the users that were involved in this transaction
-	Involved []uuid.UUID `pg:"involved" json:"involved"`
+	// Account is a userID -> accountID mapping of accounts that
+	// were hit during this transaction
+	Accounts map[uuid.UUID]uuid.UUID `pg:"accounts" json:"account_id"`
 
 	// Amount that this transaction was for, split across all involved users
 	Amount float64 `json:"amount" pg:"amount"`
@@ -25,7 +27,22 @@ type Transaction struct {
 }
 
 func (t *Transaction) String() string {
-	return fmt.Sprintf("Transaction<ID: %s, Amount: %v, CreatedBy: %s, Involved: %s>", t.Id, t.Amount, t.CreatedBy, t.Involved)
+	return fmt.Sprintf("Transaction<ID: %s, Amount: %v, CreatedBy: %s, Accounts: %s>", t.Id, t.Amount, t.CreatedBy, t.Accounts)
+}
+
+func (c *Client) GetAllTransactionsByUser(u *User, filterUser *User) ([]*Transaction, error) {
+	trans := []*Transaction{}
+	query := c.db.Model(&trans).
+		Where("accounts->>? != '' OR created_by = ?", u.Id, u.Id)
+
+	// append a filter for the user we want
+	if filterUser != nil {
+		query = query.Where("accounts->>? != '' OR created_by = ?", filterUser.Id, filterUser.Id)
+	}
+
+	err := query.Select()
+
+	return trans, err
 }
 
 // GetTransaction by ID
@@ -41,14 +58,19 @@ func (c *Client) GetTransaction(id string) (*Transaction, error) {
 
 // CreateUser creates a new transaction in the database
 func (c *Client) CreateTransaction(createdBy *User, involved []User, amount float64) error {
-	involvedIDs := make([]uuid.UUID, len(involved))
-	for i, u := range involved {
-		involvedIDs[i] = u.Id
+	accounts := make(map[uuid.UUID]uuid.UUID)
+	for _, u := range involved {
+		a, err := c.FindAccountBetween(createdBy, &u)
+		if err != nil {
+			log.Errorf("failed to get accounts")
+			continue
+		}
+		accounts[u.Id] = a.Id
 	}
 
-	t := Transaction{
+	t := &Transaction{
 		CreatedBy: createdBy.Id,
-		Involved:  involvedIDs,
+		Accounts:  accounts,
 		Amount:    amount,
 		CreatedAt: time.Now(),
 	}

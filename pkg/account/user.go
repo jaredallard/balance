@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/go-pg/pg/v9"
 	"github.com/gofrs/uuid"
+	"github.com/patrickmn/go-cache"
 )
 
 type PlatformName string
@@ -15,7 +17,8 @@ const (
 )
 
 var (
-	ErrUserExists error = errors.New("User already exists")
+	ErrUserExists   error = errors.New("User already exists")
+	ErrUserNotFound error = errors.New("User not found")
 )
 
 // User is an account owner
@@ -41,7 +44,11 @@ func (c *Client) FindUser(p PlatformName, id string) (*User, error) {
 	err := c.db.Model(u).
 		Where("platform_ids->>? = ?", p, id).
 		Limit(1).
-		Select(u)
+		Select()
+
+	if errors.Is(err, pg.ErrNoRows) {
+		return nil, ErrUserNotFound
+	}
 
 	return u, err
 }
@@ -52,19 +59,45 @@ func (c *Client) FindUserByUsernam(p PlatformName, username string) (*User, erro
 	err := c.db.Model(u).
 		Where("platform_usernames->>? = ?", p, username).
 		Limit(1).
-		Select(u)
+		Select()
+
+	if errors.Is(err, pg.ErrNoRows) {
+		return nil, ErrUserNotFound
+	}
 
 	return u, err
 }
 
 // GetUser returns a user
 func (c *Client) GetUser(id uuid.UUID) (*User, error) {
+	cacheKey := fmt.Sprintf("user:%s", id)
+	v, found := c.cache.Get(cacheKey)
+
 	u := &User{}
-	err := c.db.Model(u).
-		Where("user.id = ?", u.Id).
-		Select()
+	var err error
+	if !found {
+		err = c.db.Model(u).
+			Where("id = ?", id).
+			Select()
+
+		if errors.Is(err, pg.ErrNoRows) {
+			return nil, ErrUserNotFound
+		}
+
+		c.cache.Set(cacheKey, u, cache.DefaultExpiration)
+	} else {
+		u = v.(*User)
+		return u, nil
+	}
 
 	return u, err
+}
+
+// ListUsers returns a list of all the users in the database
+func (c *Client) ListUsers() ([]*User, error) {
+	users := []*User{}
+	err := c.db.Model(users).Select()
+	return users, err
 }
 
 // CreateUser creates a user in the database

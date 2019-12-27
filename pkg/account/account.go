@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-pg/pg/v9"
 	"github.com/gofrs/uuid"
+	"github.com/patrickmn/go-cache"
 )
 
 var (
@@ -46,19 +47,21 @@ func (a *Account) String() string {
 }
 
 type Client struct {
-	db *pg.DB
+	db    *pg.DB
+	cache *cache.Cache
 }
 
 // NewClient creates a new client
 func NewClient(db *pg.DB) *Client {
 	return &Client{
-		db: db,
+		db:    db,
+		cache: cache.New(30*time.Minute, 1*time.Hour),
 	}
 }
 
 // FindAccounts finds all accounts owned by a user
-func (c *Client) FindAccounts(u *User) ([]Account, error) {
-	var a []Account
+func (c *Client) FindAccounts(u *User) ([]*Account, error) {
+	var a []*Account
 	err := c.db.Model(&a).
 		Relation("Creator").
 		Relation("Subject").
@@ -129,7 +132,7 @@ func (c *Client) GetAccount(id uuid.UUID) (*Account, error) {
 	err := c.db.Model(a).
 		Relation("Creator").
 		Relation("Subject").
-		Where("account.id = ?", a.Id).
+		Where("id = ?", a.Id).
 		Select(a)
 	if errors.Is(err, pg.ErrNoRows) {
 		return nil, ErrAccountNotFound

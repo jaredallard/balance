@@ -2,19 +2,23 @@ package telegram
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 	"github.com/jaredallard/balance/pkg/account"
 	"github.com/jaredallard/balance/pkg/social"
+	"github.com/patrickmn/go-cache"
 	log "github.com/sirupsen/logrus"
 )
 
 type Provider struct {
 	client  *tgbotapi.BotAPI
 	account *account.Client
+	cache   *cache.Cache
 }
 
 // NewProvider creates a new Telegram message provider
@@ -24,9 +28,12 @@ func NewProvider(a *account.Client) (*Provider, error) {
 		return nil, err
 	}
 
+	c := cache.New(30*time.Minute, 1*time.Hour)
+
 	return &Provider{
 		client:  bot,
 		account: a,
+		cache:   c,
 	}, nil
 }
 
@@ -55,20 +62,31 @@ func (p *Provider) processUpdate(update tgbotapi.Update, stream chan social.Mess
 				return err
 			}
 
-			log.Infof("[telegram] sending message: %v", text)
+			log.Infof("[telegram] sending message: %v", strings.ReplaceAll(text, "\n", "\\n"))
 
 			msg := tgbotapi.NewMessage(int64(chatID), text)
 			msg.ReplyToMessageID = update.Message.MessageID
+			msg.ParseMode = "Markdown"
 			_, err = p.client.Send(msg)
 			return err
 		},
 	}
 
-	u, err := p.account.FindUser(account.PlatformTelegram, strconv.Itoa(update.Message.From.ID))
-	if err != nil {
-		msg.Error = err
-	} else {
-		msg.From = u
+	cacheKey := fmt.Sprintf("%s:%d", account.PlatformTelegram, update.Message.From.ID)
+	v, found := p.cache.Get(cacheKey)
+
+	// check if we didn't find a user
+	if !found || v == nil {
+		log.Warnf("cache miss for user: %s", cacheKey)
+		u, err := p.account.FindUser(account.PlatformTelegram, strconv.Itoa(update.Message.From.ID))
+		if err != nil {
+			msg.Error = err
+		} else {
+			msg.From = u
+		}
+		p.cache.Set(cacheKey, u, cache.DefaultExpiration)
+	} else { // we found the user in our cache
+		msg.From = v.(*account.User)
 	}
 
 	// TODO(jaredallard): cache users
@@ -113,6 +131,8 @@ func (p *Provider) Send(m *social.Message) error {
 		return err
 	}
 
-	_, err = p.client.Send(tgbotapi.NewMessage(int64(chatID), m.Text))
+	msg := tgbotapi.NewMessage(int64(chatID), m.Text)
+	msg.ParseMode = "Markdown"
+	_, err = p.client.Send(msg)
 	return err
 }

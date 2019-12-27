@@ -8,6 +8,7 @@ import (
 
 	"github.com/jaredallard/balance/pkg/account"
 	"github.com/jaredallard/balance/pkg/social"
+	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -33,7 +34,7 @@ func (h *Handlers) HandleNewUser(msg *social.Message) (string, error) {
 		},
 	})
 	if err != nil {
-		return "", err
+		return "", errors.Wrap(err, "failed to ensure msg.From")
 	}
 
 	return "Hello! I've created you an account. If you need help, or want to know how to use this bot, run /help!", nil
@@ -100,7 +101,7 @@ func (h *Handlers) HandleBalance(msg *social.Message) (string, error) {
 		return "Failed to retrieve your balances", err
 	}
 
-	m := fmt.Sprintf("Your Balances (%d Accounts):", len(accts))
+	m := fmt.Sprintf("Your Accounts (%d Accounts):\n\n", len(accts))
 	for _, a := range accts {
 		isNeg := a.Balance < 0
 		if isNeg {
@@ -123,20 +124,100 @@ func (h *Handlers) HandleBalance(msg *social.Message) (string, error) {
 		if a.CreatorId == msg.From.Id && isNeg {
 			owe = true
 			otherUser = subject
-		} else if a.SubjectId == msg.From.Id && !isNeg {
+		} else if a.CreatorId == msg.From.Id && !isNeg {
+			otherUser = subject
+		}
+
+		if a.SubjectId == msg.From.Id && !isNeg {
 			owe = true
+			otherUser = creator
+		} else if a.SubjectId == msg.From.Id && isNeg {
+			owe = false
 			otherUser = creator
 		}
 
+		// TODO(jaredallard): hard dep on USD
+		m += " •"
 		if owe {
-			m = m + fmt.Sprintf("	You owe %s %v", otherUser.PlatformUsernames[msg.PlatformName], a.Balance)
+			m = m + fmt.Sprintf("	You owe *%s* $%v", otherUser.PlatformUsernames[msg.PlatformName], a.Balance)
 		} else {
-			m = m + fmt.Sprintf("	%s owes you %v", otherUser.PlatformUsernames[msg.PlatformName], a.Balance)
+			m = m + fmt.Sprintf("	*%s* owes you $%v", otherUser.PlatformUsernames[msg.PlatformName], a.Balance)
 		}
+		m += "\n"
 	}
 	m = m + "\nTo get my details behind a balance, run /history USERNAME"
 
 	return m, nil
+}
+
+func (h *Handlers) HandleListUsers(msg *social.Message) (string, error) {
+	users, err := h.a.ListUsers()
+	if err != nil {
+		return "", errors.Wrap(err, "failed to list users")
+	}
+
+	resp := "Available Users:\n"
+	for _, u := range users {
+		resp += fmt.Sprintf("• %s\n", u.PlatformUsernames[msg.PlatformName])
+	}
+
+	return resp, nil
+}
+
+func (h *Handlers) HandleHistory(msg *social.Message, tokens []string) (string, error) {
+	userName := ""
+	if len(tokens) > 1 {
+		userName = tokens[1]
+	}
+	u, err := h.a.FindUserByUsernam(msg.PlatformName, userName)
+	if err != nil && userName != "" { // we ignore empty input since it'll nil the filter
+		return "", err
+	}
+
+	trans, err := h.a.GetAllTransactionsByUser(msg.From, u)
+	if err != nil {
+		return "", errors.Wrap(err, "failed to list transactions")
+	}
+
+	ctx := ""
+	if u != nil {
+		ctx = "(" + u.PlatformUsernames[msg.PlatformName] + ")"
+	}
+
+	resp := fmt.Sprintf("*Account History %s*\n\n", ctx)
+	for _, t := range trans {
+		amount := t.Amount / float64(len(t.Accounts))
+
+		// TODO(jaredallard): don't depend on USD
+		op := fmt.Sprintf("requested $%v from", amount)
+
+		createdByUser, err := h.a.GetUser(t.CreatedBy)
+		if err != nil {
+			log.Warnf("failed to show invalid transaction, createdByUser not found: %v", err)
+			continue
+		}
+
+		if createdByUser.Id == msg.From.Id {
+			if u != nil {
+				op += " " + u.PlatformUsernames[msg.PlatformName]
+			} else {
+				for uid := range t.Accounts {
+					user, err := h.a.GetUser(uid)
+					if err != nil {
+						log.Warnf("failed to show invalid transaction, invalid user %s: %v", uid, err)
+					}
+					op += " " + user.PlatformUsernames[msg.PlatformName]
+				}
+			}
+		} else {
+			op += " you"
+		}
+
+		str := fmt.Sprintf("_%s_: %s %s", t.CreatedAt.UTC().Format("01-02 15:04"), createdByUser.PlatformUsernames[msg.PlatformName], op)
+		resp += str
+	}
+
+	return resp, nil
 }
 
 // HandleHelp handles /help
@@ -151,6 +232,10 @@ If you want to create a transaction between you and multiple people, run /add US
 To view all transactions relating to you, run /history
 
 To view transactions between you and a user, run /history USERNAME
+
+To list all registered users, run /list
+
+To list all account balances, run /status
 
 If you need any help, message @jaredallard!
 	`), nil
